@@ -380,11 +380,11 @@ main() {
 
   while true; do
     banner
-    echo "1) Create Tunnel (با شماره)"
-    echo "2) Manage Tunnel (ریستارت/ادیت/حذف)"
+    echo "1) Create Tunnel"
+    echo "2) Manage Tunnel "
     echo "3) List Tunnels"
-    echo "4) SSH Copy Key (اختیاری)"
-    echo "5) Install Dependencies (apt) [اختیاری]"
+    echo "4) SSH Copy Key "
+    echo "5) Install Dependencies (apt) "
     echo "6) Uninstall All"
     echo "0) Exit"
     echo ""
@@ -405,3 +405,4 @@ main() {
 }
 
 main
+

@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # ==========================================================
-#   Masoud SSH Tunnel Manager v3.2 (Single-file Installer+Manager)
+#   Masoud SSH Tunnel Manager v3.3 (Single-file Installer+Manager)
 #   Author: Masoud
 #   https://github.com/masooooood
 # ==========================================================
 
-# ---- CRLF Protection (works even with: bash <(curl ...)) ----
+# ---- CRLF Guard (works when file itself has CRLF, once tr -d '\r' is used) ----
 set -o igncr 2>/dev/null || true
-if grep -q $'\r' "$0" 2>/dev/null; then exec bash <(tr -d '\r' <"$0"); fi
 
 set -euo pipefail
 
-VERSION="3.2"
+VERSION="3.3"
 APP="masoud-ssh"
 INSTALL_PATH="/usr/local/bin/${APP}"
 BASE_DIR="/etc/masoud-ssh-tunnel"
@@ -20,7 +19,7 @@ GLOBAL_CONF="${BASE_DIR}/global.conf"
 FORWARD_SCRIPT="/usr/local/bin/masoud-ssh-forward.sh"
 KEY_PATH="/root/.ssh/masoud_ssh_key"
 
-# Default update URL (changeable in menu)
+# IMPORTANT: this URL MUST point to this script in your repo (raw)
 UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/masooooood/Masoud-SSH-Tunnel/main/masoud-ssh-tunnel.sh"
 
 # ---------- UI ----------
@@ -41,19 +40,6 @@ need_root() {
   fi
 }
 
-# ---------- Self install + re-exec ----------
-install_self_and_reexec() {
-  local src
-  src="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-
-  cp -f "$src" "$INSTALL_PATH"
-  chmod +x "$INSTALL_PATH"
-
-  if [[ "$src" != "$INSTALL_PATH" ]]; then
-    exec "$INSTALL_PATH"
-  fi
-}
-
 # ---------- Dependencies ----------
 install_deps() {
   export DEBIAN_FRONTEND=noninteractive
@@ -63,6 +49,47 @@ install_deps() {
 
 # ---------- Files/dirs ----------
 init_dirs() { mkdir -p "$BASE_DIR" "$CONF_DIR"; }
+
+# ---------- Global defaults ----------
+load_global() {
+  KHAREJ_IP_DEFAULT=""
+  SSH_PORT_DEFAULT="22"
+  UPDATE_URL="$UPDATE_URL_DEFAULT"
+
+  if [[ -f "$GLOBAL_CONF" ]]; then
+    # shellcheck disable=SC1090
+    source "$GLOBAL_CONF" || true
+  fi
+}
+
+save_global() {
+  cat > "$GLOBAL_CONF" <<EOF
+# Masoud SSH Tunnel Manager global defaults
+KHAREJ_IP_DEFAULT="${KHAREJ_IP_DEFAULT}"
+SSH_PORT_DEFAULT="${SSH_PORT_DEFAULT}"
+UPDATE_URL="${UPDATE_URL}"
+EOF
+}
+
+set_global_menu() {
+  load_global
+  echo "Current default Kharej IP: ${KHAREJ_IP_DEFAULT:-<empty>}"
+  read -r -p "Enter default Kharej IP (empty=keep): " ip || true
+  [[ -n "${ip}" ]] && KHAREJ_IP_DEFAULT="$ip"
+
+  echo "Current default SSH Port: ${SSH_PORT_DEFAULT:-22}"
+  read -r -p "Enter default SSH Port (empty=keep): " p || true
+  [[ -n "${p}" ]] && SSH_PORT_DEFAULT="$p"
+
+  echo "Update URL (raw script url):"
+  echo "  ${UPDATE_URL}"
+  read -r -p "Enter new Update URL (empty=keep): " u || true
+  [[ -n "${u}" ]] && UPDATE_URL="$u"
+
+  save_global
+  echo "Saved."
+  pause
+}
 
 # ---------- SSH key ----------
 ensure_key() {
@@ -102,47 +129,6 @@ EOF
   chmod +x "$FORWARD_SCRIPT"
 }
 
-# ---------- Global defaults ----------
-load_global() {
-  KHAREJ_IP_DEFAULT=""
-  SSH_PORT_DEFAULT="22"
-  UPDATE_URL="$UPDATE_URL_DEFAULT"
-
-  if [[ -f "$GLOBAL_CONF" ]]; then
-    # shellcheck disable=SC1090
-    source "$GLOBAL_CONF" || true
-  fi
-}
-
-save_global() {
-  cat > "$GLOBAL_CONF" <<EOF
-# Masoud SSH Tunnel Manager global defaults
-KHAREJ_IP_DEFAULT="${KHAREJ_IP_DEFAULT}"
-SSH_PORT_DEFAULT="${SSH_PORT_DEFAULT}"
-UPDATE_URL="${UPDATE_URL}"
-EOF
-}
-
-set_global_menu() {
-  load_global
-  echo "Current default Kharej IP: ${KHAREJ_IP_DEFAULT:-<empty>}"
-  read -r -p "Enter default Kharej IP (empty=keep): " ip || true
-  [[ -n "${ip}" ]] && KHAREJ_IP_DEFAULT="$ip"
-
-  echo "Current default SSH Port: ${SSH_PORT_DEFAULT:-22}"
-  read -r -p "Enter default SSH Port (empty=keep): " p || true
-  [[ -n "${p}" ]] && SSH_PORT_DEFAULT="$p"
-
-  echo "Update URL (script raw url):"
-  echo "  ${UPDATE_URL}"
-  read -r -p "Enter new Update URL (empty=keep): " u || true
-  [[ -n "${u}" ]] && UPDATE_URL="$u"
-
-  save_global
-  echo "Saved."
-  pause
-}
-
 # ---------- Validation ----------
 is_port() {
   [[ "${1:-}" =~ ^[0-9]{1,5}$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 ))
@@ -176,6 +162,7 @@ parse_ports() {
 # ---------- systemd helpers ----------
 svc_name() { echo "masoud-ssh-tunnel-$1.service"; }
 tunnel_conf() { echo "${CONF_DIR}/$1.conf"; }
+reload_systemd() { systemctl daemon-reload; }
 
 write_service() {
   local name="$1"
@@ -201,54 +188,56 @@ WantedBy=multi-user.target
 EOF
 }
 
-reload_systemd() { systemctl daemon-reload; }
+# ---------- Self install + re-exec (FIXED for pipe/stdin) ----------
+install_self_and_reexec() {
+  # If already running from installed path, do nothing
+  local src
+  src="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true)"
+  if [[ "$src" == "$INSTALL_PATH" ]]; then
+    return
+  fi
+
+  # If we have a readable file path, copy it. Otherwise (pipe), download from UPDATE_URL_DEFAULT.
+  if [[ -n "$src" && -f "$src" && -r "$src" ]]; then
+    cp -f "$src" "$INSTALL_PATH"
+    chmod +x "$INSTALL_PATH"
+    exec "$INSTALL_PATH"
+  fi
+
+  # Pipe/stdin mode: fetch from GitHub raw
+  install_deps >/dev/null 2>&1 || true
+  local url="$UPDATE_URL_DEFAULT"
+  echo "Installing to $INSTALL_PATH from:"
+  echo "  $url"
+  curl -fsSL "$url" | tr -d '\r' > "$INSTALL_PATH"
+  chmod +x "$INSTALL_PATH"
+  exec "$INSTALL_PATH"
+}
 
 # ---------- Update system ----------
 get_latest_version() {
   load_global
   curl -fsSL "$UPDATE_URL" 2>/dev/null | tr -d '\r' | grep -m1 '^VERSION=' | cut -d'"' -f2 || true
 }
-
 version_gt() {
-  # returns 0 if $1 > $2 using sort -V
   [[ "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" && "$1" != "$2" ]]
 }
-
 check_updates_menu() {
   load_global
   echo "Checking updates..."
-  local latest
-  latest="$(get_latest_version)"
-  if [[ -z "$latest" ]]; then
-    echo "Could not fetch latest version."
-    pause
-    return
-  fi
+  local latest; latest="$(get_latest_version)"
+  [[ -z "$latest" ]] && { echo "Could not fetch latest version."; pause; return; }
   echo "Current: $VERSION"
   echo "Latest : $latest"
-  if version_gt "$latest" "$VERSION"; then
-    echo "Update available ✅"
-  else
-    echo "You are up to date ✅"
-  fi
+  if version_gt "$latest" "$VERSION"; then echo "Update available ✅"; else echo "You are up to date ✅"; fi
   pause
 }
-
 update_now_menu() {
   load_global
   echo "Updating from:"
   echo "  $UPDATE_URL"
-  local tmp; tmp="$(mktemp)"
-  if ! curl -fsSL "$UPDATE_URL" | tr -d '\r' > "$tmp"; then
-    echo "Download failed."
-    rm -f "$tmp"
-    pause
-    return
-  fi
-  chmod +x "$tmp"
-  cp -f "$tmp" "$INSTALL_PATH"
+  curl -fsSL "$UPDATE_URL" | tr -d '\r' > "$INSTALL_PATH"
   chmod +x "$INSTALL_PATH"
-  rm -f "$tmp"
   echo "Updated. Re-launching..."
   exec "$INSTALL_PATH"
 }
@@ -312,8 +301,7 @@ create_tunnel_menu() {
 
   echo "Ports examples: 6000 | 6000,7000 | 60000-60070 | 60000-60070,20000,2088"
   read -r -p "Enter ports: " pinput || true
-  local ports
-  ports="$(parse_ports "$pinput" || true)"
+  local ports; ports="$(parse_ports "$pinput" || true)"
   [[ -z "$ports" || "$ports" == "INVALID" ]] && { echo "Invalid ports input."; pause; return; }
 
   ensure_key
@@ -327,7 +315,6 @@ EOF
 
   write_service "$name"
   reload_systemd
-
   systemctl enable --now "$(svc_name "$name")"
   echo "Created and started: $(svc_name "$name")"
   pause
@@ -559,8 +546,8 @@ install_deps
 write_forward_script
 ensure_key
 
-# install + re-exec so user doesn't need to type masoud-ssh
+# IMPORTANT: Works when run from file OR from stdin(pipe)
 install_self_and_reexec
 
-# running from /usr/local/bin/masoud-ssh
+# After re-exec, we are running from /usr/local/bin/masoud-ssh
 main_menu

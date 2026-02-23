@@ -11,7 +11,7 @@ Designed for stability, automation, and high-load environments.
 ## 🚀 Quick Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/masooooood/REPO_NAME/main/masoud-ssh-tunnel.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/masooooood/Masoud-SSH-Tunnel/main/masoud-ssh-tunnel.sh)
 ```
 
 ---

@@ -1,37 +1,58 @@
 #!/usr/bin/env bash
 # ==========================================================
-#   Masoud SSH Tunnel Manager v3.3 (Single-file Installer+Manager)
+#   Masoud SSH Tunnel Manager v3.4 (Single-file Installer+Manager)
 #   Author: Masoud
 #   https://github.com/masooooood
 # ==========================================================
 
-# ---- CRLF Guard (works when file itself has CRLF, once tr -d '\r' is used) ----
 set -o igncr 2>/dev/null || true
-
 set -euo pipefail
 
-VERSION="3.3"
+VERSION="3.4"
+
 APP="masoud-ssh"
-INSTALL_PATH="/usr/local/bin/${APP}"
 BASE_DIR="/etc/masoud-ssh-tunnel"
 CONF_DIR="${BASE_DIR}/tunnels"
 GLOBAL_CONF="${BASE_DIR}/global.conf"
 FORWARD_SCRIPT="/usr/local/bin/masoud-ssh-forward.sh"
 KEY_PATH="/root/.ssh/masoud_ssh_key"
 
-# IMPORTANT: this URL MUST point to this script in your repo (raw)
+# Raw URL of THIS script in your repo:
 UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/masooooood/Masoud-SSH-Tunnel/main/masoud-ssh-tunnel.sh"
 
-# ---------- UI ----------
+TTY="/dev/tty"
+
+# ---------- Safe input from keyboard (works even with curl|bash) ----------
+read_tty() {
+  local prompt="${1:-}"
+  local __var="${2:-REPLY}"
+  local default="${3:-}"
+  local input=""
+
+  if [[ -r "$TTY" ]]; then
+    printf "%s" "$prompt" > "$TTY"
+    IFS= read -r input < "$TTY" || true
+  else
+    IFS= read -r -p "$prompt" input || true
+  fi
+
+  if [[ -z "$input" && -n "$default" ]]; then
+    input="$default"
+  fi
+
+  printf -v "$__var" '%s' "$input"
+}
+
+pause() { read_tty "Press Enter..." _ ""; }
+
 banner() {
-  clear || true
+  # clear only if we have a tty
+  if [[ -t 1 ]]; then clear || true; fi
   echo "=================================================="
   echo "  Masoud SSH Tunnel Manager v${VERSION}"
   echo "  https://github.com/masooooood"
   echo "=================================================="
 }
-
-pause() { read -r -p "Press Enter... " _ || true; }
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -39,6 +60,23 @@ need_root() {
     exit 1
   fi
 }
+
+# ---------- Choose install path robustly ----------
+choose_install_path() {
+  # prefer /usr/local/bin, then /usr/bin, then ~/.local/bin
+  if [[ -d /usr/local/bin ]] && [[ -w /usr/local/bin ]]; then
+    echo "/usr/local/bin/${APP}"
+    return
+  fi
+  if [[ -d /usr/bin ]] && [[ -w /usr/bin ]]; then
+    echo "/usr/bin/${APP}"
+    return
+  fi
+  mkdir -p "${HOME}/.local/bin" 2>/dev/null || true
+  echo "${HOME}/.local/bin/${APP}"
+}
+
+INSTALL_PATH="$(choose_install_path)"
 
 # ---------- Dependencies ----------
 install_deps() {
@@ -74,16 +112,16 @@ EOF
 set_global_menu() {
   load_global
   echo "Current default Kharej IP: ${KHAREJ_IP_DEFAULT:-<empty>}"
-  read -r -p "Enter default Kharej IP (empty=keep): " ip || true
+  read_tty "Enter default Kharej IP (empty=keep): " ip ""
   [[ -n "${ip}" ]] && KHAREJ_IP_DEFAULT="$ip"
 
   echo "Current default SSH Port: ${SSH_PORT_DEFAULT:-22}"
-  read -r -p "Enter default SSH Port (empty=keep): " p || true
+  read_tty "Enter default SSH Port (empty=keep): " p ""
   [[ -n "${p}" ]] && SSH_PORT_DEFAULT="$p"
 
   echo "Update URL (raw script url):"
   echo "  ${UPDATE_URL}"
-  read -r -p "Enter new Update URL (empty=keep): " u || true
+  read_tty "Enter new Update URL (empty=keep): " u ""
   [[ -n "${u}" ]] && UPDATE_URL="$u"
 
   save_global
@@ -188,28 +226,26 @@ WantedBy=multi-user.target
 EOF
 }
 
-# ---------- Self install + re-exec (FIXED for pipe/stdin) ----------
+# ---------- Self install + re-exec (works from file OR curl|bash pipe) ----------
 install_self_and_reexec() {
-  # If already running from installed path, do nothing
-  local src
+  # If already running from install path -> ok
+  local src=""
   src="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true)"
-  if [[ "$src" == "$INSTALL_PATH" ]]; then
+  if [[ -n "$src" && "$src" == "$INSTALL_PATH" ]]; then
     return
   fi
 
-  # If we have a readable file path, copy it. Otherwise (pipe), download from UPDATE_URL_DEFAULT.
+  # If we have a real file -> copy
   if [[ -n "$src" && -f "$src" && -r "$src" ]]; then
     cp -f "$src" "$INSTALL_PATH"
     chmod +x "$INSTALL_PATH"
     exec "$INSTALL_PATH"
   fi
 
-  # Pipe/stdin mode: fetch from GitHub raw
-  install_deps >/dev/null 2>&1 || true
-  local url="$UPDATE_URL_DEFAULT"
-  echo "Installing to $INSTALL_PATH from:"
-  echo "  $url"
-  curl -fsSL "$url" | tr -d '\r' > "$INSTALL_PATH"
+  # Pipe/stdin mode -> download from URL
+  echo "Installing to: $INSTALL_PATH"
+  echo "Downloading from: $UPDATE_URL_DEFAULT"
+  curl -fsSL "$UPDATE_URL_DEFAULT" | tr -d '\r' > "$INSTALL_PATH"
   chmod +x "$INSTALL_PATH"
   exec "$INSTALL_PATH"
 }
@@ -245,11 +281,11 @@ update_now_menu() {
 # ---------- SSH key copy/test ----------
 ssh_copy_id_menu() {
   load_global
-  read -r -p "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip || true
+  read_tty "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip ""
   ip="${ip:-$KHAREJ_IP_DEFAULT}"
   [[ -z "$ip" ]] && { echo "Kharej IP is empty."; pause; return; }
 
-  read -r -p "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port || true
+  read_tty "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port ""
   port="${port:-$SSH_PORT_DEFAULT}"
   is_port "$port" || { echo "Invalid port."; pause; return; }
 
@@ -262,11 +298,11 @@ ssh_copy_id_menu() {
 
 ssh_test_menu() {
   load_global
-  read -r -p "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip || true
+  read_tty "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip ""
   ip="${ip:-$KHAREJ_IP_DEFAULT}"
   [[ -z "$ip" ]] && { echo "Kharej IP is empty."; pause; return; }
 
-  read -r -p "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port || true
+  read_tty "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port ""
   port="${port:-$SSH_PORT_DEFAULT}"
   is_port "$port" || { echo "Invalid port."; pause; return; }
 
@@ -281,7 +317,7 @@ create_tunnel_menu() {
   load_global
   echo "Create Tunnel"
   echo "------------"
-  read -r -p "Tunnel name (example: t1): " name || true
+  read_tty "Tunnel name (example: t1): " name ""
   name="$(trim_spaces "$name")"
   [[ -z "$name" ]] && { echo "Name is empty."; pause; return; }
 
@@ -291,16 +327,16 @@ create_tunnel_menu() {
     return
   fi
 
-  read -r -p "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip || true
+  read_tty "Kharej IP (default: ${KHAREJ_IP_DEFAULT:-none}): " ip ""
   ip="${ip:-$KHAREJ_IP_DEFAULT}"
   [[ -z "$ip" ]] && { echo "Kharej IP is empty."; pause; return; }
 
-  read -r -p "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port || true
+  read_tty "SSH Port (default: ${SSH_PORT_DEFAULT:-22}): " port ""
   port="${port:-$SSH_PORT_DEFAULT}"
   is_port "$port" || { echo "Invalid SSH port."; pause; return; }
 
   echo "Ports examples: 6000 | 6000,7000 | 60000-60070 | 60000-60070,20000,2088"
-  read -r -p "Enter ports: " pinput || true
+  read_tty "Enter ports: " pinput ""
   local ports; ports="$(parse_ports "$pinput" || true)"
   [[ -z "$ports" || "$ports" == "INVALID" ]] && { echo "Invalid ports input."; pause; return; }
 
@@ -350,7 +386,7 @@ count_conns_for_ports() {
 }
 
 monitor_tunnel_menu() {
-  read -r -p "Tunnel name: " name || true
+  read_tty "Tunnel name: " name ""
   name="$(trim_spaces "$name")"
   [[ -z "$name" || ! -f "$(tunnel_conf "$name")" ]] && { echo "Tunnel not found."; pause; return; }
 
@@ -369,7 +405,7 @@ monitor_tunnel_menu() {
 
 # ---------- Logs ----------
 logs_tunnel_menu() {
-  read -r -p "Tunnel name: " name || true
+  read_tty "Tunnel name: " name ""
   name="$(trim_spaces "$name")"
   local svc; svc="$(svc_name "$name")"
   journalctl -u "$svc" -n 120 --no-pager || true
@@ -378,7 +414,7 @@ logs_tunnel_menu() {
 
 # ---------- Start/Stop/Restart ----------
 service_action_menu() {
-  read -r -p "Tunnel name: " name || true
+  read_tty "Tunnel name: " name ""
   name="$(trim_spaces "$name")"
   [[ -z "$name" || ! -f "$(tunnel_conf "$name")" ]] && { echo "Tunnel not found."; pause; return; }
   local svc; svc="$(svc_name "$name")"
@@ -388,7 +424,7 @@ service_action_menu() {
   echo "3) Restart"
   echo "4) Enable (boot)"
   echo "5) Disable (boot)"
-  read -r -p "Select: " c || true
+  read_tty "Select: " c ""
 
   case "$c" in
     1) systemctl start "$svc" ;;
@@ -403,7 +439,7 @@ service_action_menu() {
 
 # ---------- Edit ----------
 edit_tunnel_menu() {
-  read -r -p "Tunnel name: " name || true
+  read_tty "Tunnel name: " name ""
   name="$(trim_spaces "$name")"
   local cf; cf="$(tunnel_conf "$name")"
   [[ -z "$name" || ! -f "$cf" ]] && { echo "Tunnel not found."; pause; return; }
@@ -421,14 +457,14 @@ edit_tunnel_menu() {
 
 # ---------- Delete ----------
 delete_tunnel_menu() {
-  read -r -p "Tunnel name: " name || true
+  read_tty "Tunnel name: " name ""
   name="$(trim_spaces "$name")"
   local cf svc
   cf="$(tunnel_conf "$name")"
   svc="$(svc_name "$name")"
   [[ -z "$name" || ! -f "$cf" ]] && { echo "Tunnel not found."; pause; return; }
 
-  read -r -p "Are you sure delete '$name'? (y/N): " yn || true
+  read_tty "Are you sure delete '$name'? (y/N): " yn "N"
   [[ "${yn,,}" != "y" ]] && { echo "Canceled."; pause; return; }
 
   systemctl stop "$svc" 2>/dev/null || true
@@ -448,7 +484,7 @@ backup_menu() {
 }
 
 restore_menu() {
-  read -r -p "Backup file path (.tar.gz): " fp || true
+  read_tty "Backup file path (.tar.gz): " fp ""
   [[ ! -f "$fp" ]] && { echo "File not found."; pause; return; }
 
   tar -xzf "$fp" -C / 2>/dev/null || true
@@ -467,7 +503,7 @@ restore_menu() {
 
 # ---------- Uninstall ----------
 uninstall_menu() {
-  read -r -p "Uninstall ALL tunnels and remove manager? (y/N): " yn || true
+  read_tty "Uninstall ALL tunnels and remove manager? (y/N): " yn "N"
   [[ "${yn,,}" != "y" ]] && { echo "Canceled."; pause; return; }
 
   for f in "${CONF_DIR}"/*.conf; do
@@ -515,8 +551,8 @@ main_menu() {
     echo "15) Uninstall"
     echo "0) Exit"
     echo ""
-    read -r -p "Select: " ch || true
 
+    read_tty "Select: " ch ""
     case "$ch" in
       1) set_global_menu ;;
       2) ssh_copy_id_menu ;;
@@ -545,9 +581,5 @@ init_dirs
 install_deps
 write_forward_script
 ensure_key
-
-# IMPORTANT: Works when run from file OR from stdin(pipe)
 install_self_and_reexec
-
-# After re-exec, we are running from /usr/local/bin/masoud-ssh
 main_menu
